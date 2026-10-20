@@ -13,6 +13,7 @@ with sqlite3.connect(DATABASE_PATH) as connection:
             status TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             submitted_by TEXT NOT NULL DEFAULT 'Unknown',
+            cups_job_id INTEGER,
         )
     """)
 

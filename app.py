@@ -5,6 +5,9 @@ from pathlib import Path
 from uuid import uuid4
 import sqlite3
 from contextlib import closing
+import subprocess
+import os
+import re
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
@@ -68,10 +71,71 @@ def upload():
         app.logger.exception("Could not record uploaded job")
         return {"error": "Could not record the upload. Please try again."}, 500
 
+    try:
+        result = subprocess.run(
+            [
+                "lp",
+                "-d", "HP_LaserJet_Professional_P1102",
+                "-n", "1",
+                str(saved_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+    except subprocess.TimeoutExpired:
+        app.logger.exception("Print submission timed out")
+        return {
+            "error": "Print submission is uncertain. Check the queue before retrying.",
+            "job_id": job_id,
+        }, 503
+    except (subprocess.CalledProcessError, OSError):
+        app.logger.exception("Could not submit print job")
+        return {
+            "error": "Could not submit the document to the printer.",
+            "job_id": job_id,
+        }, 503
+
+    match = re.search(
+        r"request id is HP_LaserJet_Professional_P1102-(\d+)",
+        result.stdout,
+    )
+
+    if match is None:
+        return {
+            "error": "Submission returned without a readable job ID. Do not resubmit; check CUPS.",
+            "job_id": job_id,
+        }, 503
+
+    cups_job_id = int(match.group(1))
+
+    try:
+        with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+            with connection:
+                connection.execute(
+                    """
+                    UPDATE print_jobs
+                    SET cups_job_id = ?, status = ?
+                    WHERE id = ?
+                    """,
+                    (cups_job_id, "submitted", job_id),
+                )
+    except sqlite3.Error:
+        app.logger.exception("Print submitted but database update failed")
+        return {
+            "error": "Already submitted to CUPS, but history could not be updated. Do not resubmit.",
+            "job_id": job_id,
+            "cups_job_id": cups_job_id,
+        }, 500
+
     return {
-        "message": "PDF saved; not printed.",
+        "message": "Submitted to CUPS; physical printing is not yet confirmed.",
         "submitted_by": submitted_by,
         "job_id": job_id,
+        "cups_job_id": cups_job_id,
+        "printer_response": result.stdout.strip(),
         "filename": document.filename,
         "pages": page_count,
     }
