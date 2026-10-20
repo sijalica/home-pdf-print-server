@@ -7,6 +7,16 @@
 <body>
     <h1>Home Print Server</h1>
     <p>Your Toshiba print server is running.</p>
-    <p>PDF uploads are coming next.</p>
+    <form action="/upload" method="post" enctype="multipart/form-data">
+    <label for="pdf">Choose a PDF:</label>
+    <input
+        type="file"
+        id="pdf"
+        name="document"
+        accept=".pdf,application/pdf"
+        required
+    >
+    <button type="submit">Upload PDF</button>
+</form>
 </body>
 </html>
