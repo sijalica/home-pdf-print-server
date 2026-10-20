@@ -7,7 +7,26 @@
 <body>
     <h1>Home Print Server</h1>
     <p>Your Toshiba print server is running.</p>
+    
     <form action="/upload" method="post" enctype="multipart/form-data">
+	<p>
+    <label for="submitted-by">Your name:</label>
+    <input
+        type="text"
+        id="submitted-by"
+        name="submitted_by"
+        maxlength="80"
+        aria-describedby="name-help"
+        required
+    >
+    <br>
+<small id="name-help">
+    <strong>This is a self-reported name, not authentication.</strong>
+    Anyone could enter another person’s name. A later version can
+    identify the uploader through a signed-in account and add
+    multi-factor authentication (MFA).
+</small>
+</p>
     <label for="pdf">Choose a PDF:</label>
     <input
         type="file"
