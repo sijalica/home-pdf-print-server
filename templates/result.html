@@ -1,0 +1,7 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Print job</title><link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}"></head><body><main>
+<p class="eyebrow">PRINT REQUEST</p><h1>{{ job['status'].replace('_', ' ').title() }}</h1>
+{% if job['error_message'] %}<p role="alert">{{ job['error_message'] }}</p>{% endif %}
+<dl><dt>Document</dt><dd>{{ job['original_filename'] }}</dd><dt>Submitted by</dt><dd>{{ job['submitted_by'] }}</dd><dt>Application ID</dt><dd>{{ job['id'] }}</dd><dt>CUPS ID</dt><dd>{{ job['cups_job_id'] or 'Not yet established' }}</dd><dt>Pages</dt><dd>{{ job['page_count'] if job['status'] != 'rejected' else 'Not validated' }}</dd><dt>Upload copy</dt><dd>{{ 'Deleted' if job['file_deleted_at'] else 'Retained' }}</dd></dl>
+<p class="note">Completion is reported by CUPS and is not proof that every sheet physically printed. Refreshing this result page will not print again.</p>
+<p><a href="{{ url_for('result', job_id=job['id']) }}">Refresh status</a></p><p><a href="{{ url_for('home') }}">New print request</a> — submitting a new request prints another copy.</p>
+</main></body></html>

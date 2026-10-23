@@ -1,41 +1,10 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>Home Print Server</title>
-</head>
-<body>
-    <h1>Home Print Server</h1>
-    <p>Your Toshiba print server is running.</p>
-    
-    <form action="/upload" method="post" enctype="multipart/form-data">
-	<p>
-    <label for="submitted-by">Your name:</label>
-    <input
-        type="text"
-        id="submitted-by"
-        name="submitted_by"
-        maxlength="80"
-        aria-describedby="name-help"
-        required
-    >
-    <br>
-<small id="name-help">
-    <strong>This is a self-reported name, not authentication.</strong>
-    Anyone could enter another person’s name. A later version can
-    identify the uploader through a signed-in account and add
-    multi-factor authentication (MFA).
-</small>
-</p>
-    <label for="pdf">Choose a PDF:</label>
-    <input
-        type="file"
-        id="pdf"
-        name="document"
-        accept=".pdf,application/pdf"
-        required
-    >
-    <button type="submit">Upload PDF</button>
-</form>
-</body>
-</html>
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Home Print Server</title><link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}"></head>
+<body><main><p class="eyebrow">HOME LAB · PDF PRINTING</p><h1>Print a document</h1><p>Send one PDF to the household printer. One copy of every page will print.</p>
+<form action="{{ url_for('upload') }}" method="post" enctype="multipart/form-data">
+<input type="hidden" name="token" value="{{ token }}">
+<label for="submitted-by">Your name</label><input type="text" id="submitted-by" name="submitted_by" maxlength="80" required aria-describedby="name-help">
+<p id="name-help" class="note"><strong>This is a self-reported name, not authentication.</strong> Anyone could enter another person’s name. A later version can identify the uploader through a signed-in account and add multi-factor authentication (MFA).</p>
+<label for="pdf">PDF document</label><input type="file" id="pdf" name="document" accept=".pdf,application/pdf" required><p class="note">1–100 pages. Total upload request: up to 20 MiB. Encrypted PDFs are not supported.</p>
+<button type="submit">Upload and print</button></form>
+<p class="note">Completed uploads are deleted after CUPS reports completion, normally within about 15 seconds. Print history remains. Access is through the SSH tunnel.</p></main></body></html>

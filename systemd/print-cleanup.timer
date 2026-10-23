@@ -1,0 +1,8 @@
+[Unit]
+Description=Check print jobs every 15 seconds
+[Timer]
+OnStartupSec=15s
+OnUnitInactiveSec=15s
+AccuracySec=1s
+[Install]
+WantedBy=timers.target

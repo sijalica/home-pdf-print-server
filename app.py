@@ -1,141 +1,126 @@
-from flask import Flask, render_template, request
-from pypdf import PdfReader
-from pypdf.errors import PdfReadError
-from pathlib import Path
-from uuid import uuid4
-import sqlite3
-from contextlib import closing
-import subprocess
+"""Loopback-only household PDF printer. Names are not authenticated identities."""
+import hmac
+import json
 import os
 import re
+import secrets
+import shutil
+import sqlite3
+import subprocess
+import sys
+from uuid import uuid4
+
+from flask import Flask, abort, redirect, render_template, request, session, url_for
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+from common import ROOT, INSTANCE, UPLOADS, QUEUE, database, upload_path, update, remove_upload
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
-UPLOAD_DIR = Path(app.instance_path) / "uploads"
-DATABASE_PATH = Path(app.instance_path) / "print-server.sqlite3"
+app.config.update(
+    SECRET_KEY=(INSTANCE / 'secret.key').read_text().strip(),
+    MAX_CONTENT_LENGTH=20 * 1024**2,
+    MAX_FORM_PARTS=8,
+    MAX_FORM_MEMORY_SIZE=64 * 1024,
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE='Strict',
+    # HTTP exists only on local loopback ends of an encrypted SSH tunnel.
+    SESSION_COOKIE_SECURE=False,
+    TRUSTED_HOSTS=['127.0.0.1', 'localhost'],
+)
+signer = URLSafeTimedSerializer(app.secret_key, salt='print-form-v1')
 
-@app.get("/")
+@app.after_request
+def headers(response):
+    response.headers['Cache-Control'] = 'no-store'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['Referrer-Policy'] = 'no-referrer'
+    response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'none'; style-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+    return response
+
+@app.get('/')
 def home():
-    return render_template("index.html")
+    session.setdefault('owner', secrets.token_hex(32))
+    token = signer.dumps({'owner': session['owner'], 'nonce': secrets.token_hex(32)})
+    return render_template('index.html', token=token)
 
-@app.post("/upload")
+@app.errorhandler(413)
+def too_large(error):
+    return render_template('error.html', message='The upload request exceeds 20 MiB. Choose a smaller PDF.'), 413
+
+@app.errorhandler(400)
+def bad_request(error):
+    return render_template('error.html', message='Invalid request. Open a fresh upload page and try again.'), 400
+
+@app.get('/jobs/<job_id>')
+def result(job_id):
+    with database() as db:
+        job = db.execute('SELECT * FROM print_jobs WHERE id = ?', (job_id,)).fetchone()
+    if not job or not session.get('owner') or job['owner_token'] != session['owner']:
+        abort(404)
+    return render_template('result.html', job=job)
+
+@app.post('/upload')
 def upload():
-    submitted_by = request.form.get("submitted_by", "").strip()
-
-    if not submitted_by or len(submitted_by) > 80:
-        return {"error": "Enter your name using 1 to 80 characters."}, 400
-
-    document = request.files.get("document")
-
-    if document is None or document.filename == "":
-        return {"error": "Please select a file."}, 400
-
-    if not document.filename.lower().endswith(".pdf"):
-        return {"error": "Only PDF files are accepted."}, 400
-
     try:
-        reader = PdfReader(document.stream, strict=True)
+        token = request.form.get('token', '')
+        signed = signer.loads(token, max_age=3600)
+        if not session.get('owner') or not hmac.compare_digest(signed['owner'], session['owner']):
+            abort(400)
+    except (BadSignature, SignatureExpired, KeyError, TypeError):
+        abort(400)
 
-        if reader.is_encrypted:
-            return {"error": "Encrypted PDFs are not supported."}, 400
-
-        page_count = len(reader.pages)
-
-    except PdfReadError:
-        return {"error": "The file could not be read as a valid PDF."}, 400
-
-    if page_count < 1 or page_count > 100:
-        return {"error": "The PDF must contain between 1 and 100 pages."}, 400
-
+    name = request.form.get('submitted_by', '').strip()
+    document = request.files.get('document')
+    if not 1 <= len(name) <= 80 or any(ord(c) < 32 for c in name):
+        return render_template('error.html', message='Enter a name of 1–80 characters.'), 400
+    if not document or not document.filename or not document.filename.lower().endswith('.pdf'):
+        return render_template('error.html', message='Choose a PDF file.'), 400
+    filename = document.filename.replace('\\', '/').split('/')[-1][:200]
+    filename = ''.join(c for c in filename if ord(c) >= 32)
     job_id = uuid4().hex
-    saved_path = UPLOAD_DIR / f"{job_id}.pdf"
-
-    document.stream.seek(0)
-
-    with saved_path.open("xb") as destination:
-        document.save(destination)
-
+    # Serialize the reservation: two concurrent POSTs cannot submit the same token twice.
+    with database() as db:
+        db.execute('BEGIN IMMEDIATE')
+        previous = db.execute('SELECT id FROM print_jobs WHERE submission_token = ?', (token,)).fetchone()
+        if previous:
+            return redirect(url_for('result', job_id=previous['id']), code=303)
+        outstanding = db.execute("SELECT count(*) FROM print_jobs WHERE status NOT IN ('completed','failed','canceled','rejected')").fetchone()[0]
+        if outstanding >= 20 or shutil.disk_usage(INSTANCE).free < 1024**3:
+            return render_template('error.html', message='Server storage or pending-job limit reached. Ask the operator to review.'), 503
+        db.execute('''INSERT INTO print_jobs
+            (id, original_filename, page_count, status, submitted_by, owner_token, submission_token, cups_title)
+            VALUES (?, ?, 1, 'validating', ?, ?, ?, ?)''',
+            (job_id, filename, name, session['owner'], token, f'home-print-{job_id}'))
+    path = upload_path(job_id)
     try:
-        with closing(sqlite3.connect(DATABASE_PATH)) as connection:
-            with connection:
-                connection.execute(
-                    """
-                    INSERT INTO print_jobs
-                        (id, original_filename, page_count, status, submitted_by)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (job_id, document.filename, page_count, "saved", submitted_by),
-                )
-    except sqlite3.Error:
-        saved_path.unlink(missing_ok=True)
-        app.logger.exception("Could not record uploaded job")
-        return {"error": "Could not record the upload. Please try again."}, 500
-
-    try:
-        result = subprocess.run(
-            [
-                "lp",
-                "-d", "HP_LaserJet_Professional_P1102",
-                "-n", "1",
-                str(saved_path),
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=30,
-            env={**os.environ, "LC_ALL": "C"},
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'wb') as output:
+            document.save(output)
+        validation = subprocess.run(
+            [sys.executable, str(ROOT / 'validate_pdf.py'), str(path)],
+            capture_output=True, text=True, timeout=15, check=True,
         )
-    except subprocess.TimeoutExpired:
-        app.logger.exception("Print submission timed out")
-        return {
-            "error": "Print submission is uncertain. Check the queue before retrying.",
-            "job_id": job_id,
-        }, 503
-    except (subprocess.CalledProcessError, OSError):
-        app.logger.exception("Could not submit print job")
-        return {
-            "error": "Could not submit the document to the printer.",
-            "job_id": job_id,
-        }, 503
-
-    match = re.search(
-        r"request id is HP_LaserJet_Professional_P1102-(\d+)",
-        result.stdout,
-    )
-
-    if match is None:
-        return {
-            "error": "Submission returned without a readable job ID. Do not resubmit; check CUPS.",
-            "job_id": job_id,
-        }, 503
-
-    cups_job_id = int(match.group(1))
+        pages = json.loads(validation.stdout)['pages']
+        update(job_id, page_count=pages, status='submitting')
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+        update(job_id, status='rejected', error_message='PDF could not be validated or stored.')
+        remove_upload(job_id)
+        return redirect(url_for('result', job_id=job_id), code=303)
 
     try:
-        with closing(sqlite3.connect(DATABASE_PATH)) as connection:
-            with connection:
-                connection.execute(
-                    """
-                    UPDATE print_jobs
-                    SET cups_job_id = ?, status = ?
-                    WHERE id = ?
-                    """,
-                    (cups_job_id, "submitted", job_id),
-                )
-    except sqlite3.Error:
-        app.logger.exception("Print submitted but database update failed")
-        return {
-            "error": "Already submitted to CUPS, but history could not be updated. Do not resubmit.",
-            "job_id": job_id,
-            "cups_job_id": cups_job_id,
-        }, 500
-
-    return {
-        "message": "Submitted to CUPS; physical printing is not yet confirmed.",
-        "submitted_by": submitted_by,
-        "job_id": job_id,
-        "cups_job_id": cups_job_id,
-        "printer_response": result.stdout.strip(),
-        "filename": document.filename,
-        "pages": page_count,
-    }
+        printed = subprocess.run(
+            ['lp', '-d', QUEUE, '-n', '1', '-t', f'home-print-{job_id}', str(path)],
+            capture_output=True, text=True, check=True, timeout=30,
+            env={**os.environ, 'LC_ALL': 'C'},
+        )
+        match = re.search(r'request id is ' + re.escape(QUEUE) + r'-(\d+)', printed.stdout)
+        if not match:
+            raise ValueError('No readable CUPS ID')
+        update(job_id, cups_job_id=int(match.group(1)), status='submitted')
+    except (subprocess.SubprocessError, OSError, ValueError, sqlite3.Error):
+        # CUPS may already have accepted the job. Never automatically print it again.
+        app.logger.exception('Submission requires review: %s', job_id)
+        try:
+            update(job_id, status='needs_review', error_message='Submission outcome uncertain. Do not resubmit; ask the operator to check CUPS.')
+        except sqlite3.Error:
+            app.logger.exception('Could not persist uncertainty: %s', job_id)
+    return redirect(url_for('result', job_id=job_id), code=303)

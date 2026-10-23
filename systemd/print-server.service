@@ -1,0 +1,13 @@
+[Unit]
+Description=Home PDF print server
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/print-server
+ExecStart=%h/projects/print-server/.venv/bin/gunicorn --bind 127.0.0.1:5000 --workers 1 --threads 2 --timeout 75 app:app
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+[Install]
+WantedBy=default.target
