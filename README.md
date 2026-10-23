@@ -4,6 +4,10 @@ A small Linux home lab that gives a USB-only HP LaserJet P1102 a browser upload 
 
 **Status:** replacement release prepared and tested locally with a simulated printer. The earlier version physically printed on the Toshiba; deployment and reboot acceptance of this revision remain pending. This is a household lab, not a public print service.
 
+Access currently uses an SSH tunnel. UFW remains inactive; direct LAN
+access, network segmentation, application authentication, and MFA
+are not implemented.
+
 ## What it does
 
 - Accepts a self-reported name and one PDF; prints one copy of all pages.
